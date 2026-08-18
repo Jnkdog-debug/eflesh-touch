@@ -1,0 +1,13 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# Arduino build artifacts
+*.hex
+*.elf
+build/
+
+# IDE
+.vscode/
+.idea/
