@@ -9,13 +9,14 @@ Supports two firmware protocols:
   TEXT:   /home/xyz/Arduino/eflash/eflash.ino
           FRAME: [S1:x,y,z] [S2:x,y,z] ... [S5:x,y,z]  @ 115200 baud
   BINARY: /home/xyz/Arduino/eflash/eflash_binary/eflash_binary.ino
-          64-byte frames (sync + seq + 5x3 floats LE + checksum) @ 2M baud
+          64-byte frames (sync + seq + 5x3 floats LE + checksum) @ 921600 baud
+          (921600 = CP2102 USB-UART bridge limit; 2M baud garbles on it)
 
 Usage:
   python visualize_3d.py                        # text protocol
   python visualize_3d.py --binary               # binary protocol (fast)
   python visualize_3d.py --sim                  # simulated data
-  python visualize_3d.py --port /dev/ttyACM0 --baud 2000000 --binary
+  python visualize_3d.py --port /dev/ttyUSB0 --baud 921600 --binary
 """
 
 import sys
@@ -37,14 +38,14 @@ parser.add_argument('--binary', action='store_true',
 parser.add_argument('--port', type=str, default='/dev/ttyUSB0',
                     help='Serial port (default: /dev/ttyUSB0)')
 parser.add_argument('--baud', type=int, default=None,
-                    help='Serial baud rate (default: 115200 text, 2000000 binary)')
+                    help='Serial baud rate (default: 115200 text, 921600 binary)')
 parser.add_argument('--debug', action='store_true',
                     help='Print raw serial data for diagnostics')
 args = parser.parse_args()
 
 BINARY_MODE = args.binary
 if args.baud is None:
-    args.baud = 2000000 if BINARY_MODE else 115200
+    args.baud = 921600 if BINARY_MODE else 115200
 
 # ============================================================
 # Serial setup (or simulated data mode)
@@ -262,6 +263,11 @@ BIN_SYNC0 = 0xAA
 BIN_SYNC1 = 0x55
 _bin_last_seq = -1
 _bin_lost_frames = 0
+_bin_badck = 0        # checksum 失败次数 —— 链路误码/丢字节会推高它
+_bin_skip_bytes = 0   # 找不到同步头丢弃的字节数 —— 正常≈0；固件重启时会蹦出一批
+_bin_resync = 0       # seq 大跳(≥128, mod 256 环绕) —— 多半意味着固件重启了
+_frames_parsed = 0
+_frames_last = 0
 
 def read_binary_frames():
     """
@@ -269,6 +275,7 @@ def read_binary_frames():
     and extract valid frames.  Returns number of frames parsed.
     """
     global serial_buffer, _bin_last_seq, _bin_lost_frames
+    global _bin_badck, _bin_skip_bytes, _bin_resync, _frames_parsed
     n_parsed = 0
 
     try:
@@ -281,6 +288,7 @@ def read_binary_frames():
             idx = serial_buffer.find(bytes([BIN_SYNC0, BIN_SYNC1]))
             if idx < 0:
                 # No sync found — keep last byte (might be part of 0xAA)
+                _bin_skip_bytes += len(serial_buffer) - 1
                 if args.debug:
                     print(f"[DBG] no sync in {len(serial_buffer)}B, discarding")
                 serial_buffer = serial_buffer[-1:]
@@ -305,6 +313,7 @@ def read_binary_frames():
                 ck ^= frame[i]
             if ck != frame[63]:
                 # Bad checksum — skip the sync bytes and try again
+                _bin_badck += 1
                 if args.debug:
                     print(f"[DBG] bad cksum, skipping 2 bytes")
                 serial_buffer = serial_buffer[2:]
@@ -321,6 +330,12 @@ def read_binary_frames():
                     _bin_lost_frames += dropped
                     if args.debug:
                         print(f"[DBG] lost {dropped} frame(s), seq jump {_bin_last_seq}->{seq}")
+                elif dropped >= 128:
+                    # 大跳变 —— mod 256 环绕统计不到具体数量，单独计次。
+                    # 出现它基本可以断定固件中间重启过（seq 从 0 重新计数）。
+                    _bin_resync += 1
+                    if args.debug:
+                        print(f"[DBG] big seq jump {_bin_last_seq}->{seq} (firmware reboot?)")
 
             _bin_last_seq = seq
 
@@ -334,6 +349,7 @@ def read_binary_frames():
             # Advance past this frame
             serial_buffer = serial_buffer[BIN_FRAME_SIZE:]
             n_parsed += 1
+            _frames_parsed += 1
 
     except Exception as e:
         if args.debug:
@@ -352,7 +368,7 @@ _last_status_print = 0
 
 
 def update():
-    global _frame_count, _last_status_print
+    global _frame_count, _last_status_print, _frames_last
 
     # 1. Acquire data
     if SIM_MODE:
@@ -388,7 +404,11 @@ def update():
     if now - _last_status_print > 2.0:
         mags = [f"{np.linalg.norm(sensor_data[sid]):.0f}" for sid in SENSOR_IDS]
         if BINARY_MODE:
-            tag = f"BIN lost={_bin_lost_frames}"
+            dt = max(now - _last_status_print, 1e-6)
+            fps = (_frames_parsed - _frames_last) / dt
+            _frames_last = _frames_parsed
+            tag = (f"BIN f={fps:5.1f}Hz lost={_bin_lost_frames} badck={_bin_badck} "
+                   f"resync={_bin_resync} skipB={_bin_skip_bytes}")
         else:
             tag = "TEXT"
         mode_str = "SIM" if SIM_MODE else tag
@@ -399,6 +419,11 @@ def update():
 # ============================================================
 # Start
 # ============================================================
+# 丢弃 Qt 初始化期间串口积压的旧数据，避免开场统计出虚假丢帧
+if ser and ser.is_open:
+    ser.reset_input_buffer()
+
+_last_status_print = time.time()   # fps 统计的基准时间
 timer = QTimer()
 timer.timeout.connect(update)
 timer.start(20)  # 50 Hz refresh

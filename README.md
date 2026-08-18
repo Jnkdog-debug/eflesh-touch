@@ -8,7 +8,7 @@ eFlesh 磁场触觉传感器 —— ESP32 + 5× MLX90393 (SPI)，含 Arduino 固
 eflesh-touch/
 ├── eflesh/                  # 固件：文本协议 (115200 baud)
 │   └── eflesh.ino
-├── eflash_binary/           # 固件：二进制协议 (2M baud, ~100+ Hz)
+├── eflash_binary/           # 固件：二进制协议 (921600 baud, ~170 Hz)
 │   └── eflash_binary.ino
 └── eflesh-upper/            # Python 上位机
     ├── test.py              # 15 通道传感器实时曲线 (matplotlib)
@@ -27,7 +27,10 @@ eflesh-touch/
 | 固件 | 协议 | 波特率 | 帧格式 |
 |------|------|--------|--------|
 | `eflesh/eflesh.ino` | 文本 | 115200 | `FRAME: [S1:x,y,z] [S2:x,y,z] ...` |
-| `eflash_binary/eflash_binary.ino` | 二进制 | 2000000 | 64 字节定长帧：`AA 55` 同步 + seq + 5×(float x,y,z) LE + XOR 校验 |
+| `eflash_binary/eflash_binary.ino` | 二进制 | 921600 | 64 字节定长帧：`AA 55` 同步 + seq + 5×(float x,y,z) LE + XOR 校验 |
+
+> 注意：波特率上限取决于板子上的 USB 串口芯片 —— CP2102 最高 921600（ESP32 DevKit 常见），
+> CH340/CP2102N 可到 2M。921600 对 64B×140Hz ≈ 90 kbps 的数据量绰绰有余。
 
 ## 上位机使用
 
@@ -43,7 +46,7 @@ pip install pyserial numpy matplotlib PyQt5 pyqtgraph
 python eflesh-upper/visualize_3d.py                        # 文本协议
 python eflesh-upper/visualize_3d.py --binary               # 二进制协议（高速）
 python eflesh-upper/visualize_3d.py --sim                  # 模拟数据演示
-python eflesh-upper/visualize_3d.py --port /dev/ttyACM0 --baud 2000000 --binary
+python eflesh-upper/visualize_3d.py --port /dev/ttyUSB0 --baud 921600 --binary
 ```
 
 15 通道实时曲线：
