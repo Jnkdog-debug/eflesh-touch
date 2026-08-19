@@ -77,16 +77,22 @@ import pyqtgraph.opengl as gl
 # ============================================================
 # Sensor configuration
 
-# Physical layout on PCB (mm): cross pattern, S5 center
+# Physical layout on PCB (mm) — 四角 + 中心的方形排布（五点骰子形）:
+#     S1 ──── S2
+#        [S5]          (S5 在正方形中心)
+#     S3 ──── S4
+# 坐标约定：俯视皮肤，+Y 是"上"、+X 是"右"（对应视图里的绿/红轴）。
+# 如果和实物转向对不上（差 90°/180°），把对应坐标的符号对调即可。
 # ============================================================
-SPACING = 12.0  # mm between center and each outer sensor
+PITCH = 12.0  # 相邻角传感器的间距 (mm)，如 S1-S2 的距离 —— 【用卡尺实测后修改！】
+OFF = PITCH / 2.0
 
 SENSOR_POS = {
-    'S1': np.array([0,  SPACING, 0]),   # North
-    'S2': np.array([-SPACING, 0, 0]),   # West
-    'S3': np.array([0, -SPACING, 0]),   # South
-    'S4': np.array([SPACING,  0, 0]),   # East
-    'S5': np.array([0, 0, 0]),          # Center
+    'S1': np.array([-OFF, +OFF, 0]),   # 左上
+    'S2': np.array([+OFF, +OFF, 0]),   # 右上
+    'S3': np.array([-OFF, -OFF, 0]),   # 左下
+    'S4': np.array([+OFF, -OFF, 0]),   # 右下
+    'S5': np.array([0, 0, 0]),         # 中心
 }
 
 SENSOR_IDS = ['S1', 'S2', 'S3', 'S4', 'S5']
@@ -152,6 +158,12 @@ origin_pts = np.array([SENSOR_POS[sid] for sid in SENSOR_IDS])
 scatter = gl.GLScatterPlotItem(pos=origin_pts, color=(1, 1, 1, 0.9),
                                size=8, pxMode=False)
 w.addItem(scatter)
+
+# ---- Sensor labels: S1..S5 浮在各原点上方，方便核对 通道-物理位置 映射 ----
+if hasattr(gl, 'GLTextItem'):          # pyqtgraph >= 0.13
+    for sid in SENSOR_IDS:
+        w.addItem(gl.GLTextItem(pos=SENSOR_POS[sid] + np.array([0, 0, 3]),
+                                text=sid, color=(1, 1, 1, 0.9)))
 
 # ---- Sensor labels (GLLabelItem = not available; use TextItem at each pos) ----
 # Simple axis-aligned text labels are tricky in OpenGL.  We'll label in legend style
@@ -363,6 +375,14 @@ def read_binary_frames():
 # ============================================================
 SCALE_FACTOR = 600.0       # µT→mm (5000µT → ~8.3mm arrow)
 MAX_MAG_DISPLAY = 5000.0   # µT at which colour saturates to red
+DELTA_SCALE_FACTOR = 60.0  # ΔB 模式: µT→mm（ΔB 通常几十~几百 µT，放大 10 倍才看得见）
+DELTA_MAX_DISPLAY = 2000.0 # ΔB 模式颜色饱和阈值 (µT)
+
+# 基线与显示模式：箭头默认画总磁场 B（磁铁静态基线主导，方向反映磁铁几何，
+# 与接触无关）。按 Z 采集当前基线 B0，按 B 切到 ΔB=B−B0 —— 这才是形变/接触
+# 信息，也是 6 维力模型的实际输入。Z 在每次开跑/零点漂移后按一下即可。
+baseline = {sid: np.zeros(3) for sid in SENSOR_IDS}
+show_delta = False
 _frame_count = 0
 _last_status_print = 0
 
@@ -389,10 +409,16 @@ def update():
 
     for sid in SENSOR_IDS:
         origin = SENSOR_POS[sid]
-        vec = sensor_data[sid]
+        raw = sensor_data[sid]
+        if show_delta:
+            vec = raw - baseline[sid]
+            scale, maxmag = DELTA_SCALE_FACTOR, DELTA_MAX_DISPLAY
+        else:
+            vec = raw
+            scale, maxmag = SCALE_FACTOR, MAX_MAG_DISPLAY
         mag = float(np.linalg.norm(vec))
-        tip = origin + (vec / SCALE_FACTOR)
-        color = magnitude_to_color(mag, max_mag=MAX_MAG_DISPLAY)
+        tip = origin + (vec / scale)
+        color = magnitude_to_color(mag, max_mag=maxmag)
         line_pts.extend([origin, tip])
         line_cols.extend([color, color])
 
@@ -402,7 +428,12 @@ def update():
     _frame_count += 1
     now = time.time()
     if now - _last_status_print > 2.0:
-        mags = [f"{np.linalg.norm(sensor_data[sid]):.0f}" for sid in SENSOR_IDS]
+        if show_delta:
+            mags = [f"{np.linalg.norm(sensor_data[sid] - baseline[sid]):.0f}" for sid in SENSOR_IDS]
+            mtag = "dB(µT)"
+        else:
+            mags = [f"{np.linalg.norm(sensor_data[sid]):.0f}" for sid in SENSOR_IDS]
+            mtag = "mags(µT)"
         if BINARY_MODE:
             dt = max(now - _last_status_print, 1e-6)
             fps = (_frames_parsed - _frames_last) / dt
@@ -412,7 +443,7 @@ def update():
         else:
             tag = "TEXT"
         mode_str = "SIM" if SIM_MODE else tag
-        print(f"[{mode_str}] frame={_frame_count}  mags(µT)=[{', '.join(mags)}]")
+        print(f"[{mode_str}] frame={_frame_count}  {mtag}=[{', '.join(mags)}]")
         _last_status_print = now
 
 
@@ -424,6 +455,25 @@ if ser and ser.is_open:
     ser.reset_input_buffer()
 
 _last_status_print = time.time()   # fps 统计的基准时间
+# ---- 键盘快捷键：Z=采集基线 B0（去零），B=切换 RAW / ΔB 显示 ----
+def _on_key(event):
+    global show_delta
+    if event.key() == Qt.Key_Z:
+        for sid in SENSOR_IDS:
+            baseline[sid] = sensor_data[sid].copy()
+        b0 = ', '.join(f"{np.linalg.norm(baseline[s]):.0f}" for s in SENSOR_IDS)
+        print(f"[ZERO] 基线已采集  B0(µT)=[{b0}]  （再按 B 可看 ΔB）")
+    elif event.key() == Qt.Key_B:
+        show_delta = not show_delta
+        mode = "ΔB = B − B0（形变/接触信息，模型实际输入）" if show_delta \
+            else "RAW 总磁场（磁铁基线主导）"
+        print(f"[MODE] 显示切换 → {mode}")
+    else:
+        event.ignore()
+
+w.keyPressEvent = _on_key
+w.setFocusPolicy(Qt.StrongFocus)
+
 timer = QTimer()
 timer.timeout.connect(update)
 timer.start(20)  # 50 Hz refresh
@@ -435,6 +485,7 @@ else:
     mode_label = f"{args.port} @ {args.baud} [{proto}]"
 print(f"eFlesh 3D Visualizer started — {mode_label}")
 print("Controls: Left-drag=rotate  Right-drag=zoom  Middle-drag=pan")
+print("          Z=capture baseline B0 (zero)   B=toggle RAW / ΔB display")
 print("Close the window or press Ctrl+C to exit.")
 
 try:
