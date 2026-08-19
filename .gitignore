@@ -11,3 +11,10 @@ build/
 # IDE
 .vscode/
 .idea/
+
+# eflesh_calib: 数据与训练产物不进 git（原始数据在 Orin，训练在 4090）
+eflesh_calib/data/
+*.h5
+*.npz
+*.pt
+eval_report*.png
