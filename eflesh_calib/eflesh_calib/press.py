@@ -200,9 +200,8 @@ class PressMachine:
             pr = s.read_pose()
             z_cur = float(self.sf.base_to_skin(pr[1])[2]) if pr else z_cur - config.STEP_MM
 
-        # ---------- DRAG: 剪切批 —— 定深侧拖（悬空演练跳过） ----------
-        if air_gap_mm is None and (abs(target.drag_dx_mm) > 1e-9
-                                   or abs(target.drag_dy_mm) > 1e-9):
+        # ---------- DRAG: 剪切批 —— 定深侧拖（空中演练时在悬停高度拖，验证几何） ----------
+        if abs(target.drag_dx_mm) > 1e-9 or abs(target.drag_dy_mm) > 1e-9:
             self._phase(press_idx, PH_DRAG)
             pr = s.read_pose()
             if pr is not None:
@@ -230,8 +229,8 @@ class PressMachine:
                   f"Fx={float(r[1][0]) if ok else float('nan'):+.2f}N "
                   f"Fy={float(r[1][1]) if ok else float('nan'):+.2f}N")
 
-        # ---------- TWIST: 扭转批 —— 绕探针轴旋转（悬空演练跳过） ----------
-        if air_gap_mm is None and abs(target.twist_deg) > 1e-9:
+        # ---------- TWIST: 扭转批 —— 绕探针轴旋转（空中演练时在悬停高度转） ----------
+        if abs(target.twist_deg) > 1e-9:
             self._phase(press_idx, PH_TWIST)
             pr = s.read_pose()
             if pr is not None:
