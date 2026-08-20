@@ -100,7 +100,7 @@ def skin_reader(port: str, baud: int, out_q: deque, stats: SkinStats,
 
     def setup():
         nonlocal ser
-        ser = serial.Serial(port, baud, timeout=0.05)
+        ser = serial.Serial(port, baud, timeout=0.05, exclusive=True)
         time.sleep(0.2)
         ser.reset_input_buffer()   # 丢掉开串口时 ESP32 复位产生的垃圾
 

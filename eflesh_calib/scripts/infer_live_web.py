@@ -95,10 +95,12 @@ function draw(s){
   ctx.beginPath();ctx.moveTo(px-12,py);ctx.lineTo(px+12,py);
   ctx.moveTo(px,py-12);ctx.lineTo(px,py+12);ctx.stroke();
  }
+ const nums=s.contact?
+  `  x=${s.x.toFixed(2)}mm  y=${s.y.toFixed(2)}mm  z=${s.z.toFixed(2)}mm  Fz=${s.fz.toFixed(2)}N`
+  :'  — 未接触，预测值在训练分布外，已屏蔽 —';
  document.getElementById('read').textContent =
-  (s.contact?'● 接触  ':'○ 无接触')+
-  `  x=${s.x.toFixed(2)}mm  y=${s.y.toFixed(2)}mm  z=${s.z.toFixed(2)}mm  `+
-  `Fz=${s.fz.toFixed(2)}N  ‖ΔB‖=${s.mag.toFixed(0)}µT  ${s.hz.toFixed(0)}Hz`;
+  (s.contact?'● 接触  ':'○ 无接触')+nums+
+  `  ‖ΔB‖=${s.mag.toFixed(0)}µT  ${s.hz.toFixed(0)}Hz`;
 }
 async function loop(){
  try{const r=await fetch('/state');draw(await r.json());}
@@ -161,6 +163,16 @@ def main():
 
     model, x_mean, x_std, y_mean, y_std = load_model(args.artifact)
     import torch
+
+    probe = socket.socket()                       # 先探端口:被占直接说人话退出
+    try:
+        probe.bind(("0.0.0.0", args.http))
+    except OSError:
+        raise SystemExit(f"端口 {args.http} 已被占用 —— 八成已有一个实例在跑,"
+                         f"浏览器直接开 http://<Orin-IP>:{args.http} 即可;"
+                         f"要重启先执行: fuser -k {args.http}/tcp")
+    finally:
+        probe.close()
 
     q: deque = deque(maxlen=2000)
     latest = Latest()
