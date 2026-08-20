@@ -54,7 +54,9 @@ def main():
         assert args.artifact, "mlp 需要 --artifact"
         pred = predict_mlp(args.artifact, Xva)
 
-    extra = [n for n in ("Fx", "Fy", "Mx", "My", "Mz")][:max(0, yva.shape[1] - 4)]
+    known = ("Fx", "Fy", "Mx", "My", "Mz")
+    k = max(0, yva.shape[1] - 4)
+    extra = [known[i] if i < len(known) else f"y{4+i}" for i in range(k)]   # 旧 10 列 npz 兜底 y9
     names = TARGET_NAMES + extra
     units = ["mm", "mm", "mm", "N"] + ["N·m" if n.startswith("M") else "N" for n in extra]
     err = pred - yva
