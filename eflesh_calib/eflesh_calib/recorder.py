@@ -30,8 +30,9 @@ from .clock import SessionClock
 
 # 相位码
 PH_APPROACH, PH_TARE, PH_DESCEND, PH_TOUCHOFF, PH_PRESS, PH_HOLD, PH_RETRACT = range(1, 8)
+PH_DRAG, PH_TWIST = 8, 9          # 剪切/扭转批扩展相位（PRESS 之后、HOLD 之前）
 PHASE_NAMES = {1: "approach", 2: "tare", 3: "descend", 4: "touchoff",
-               5: "press", 6: "hold", 7: "retract"}
+               5: "press", 6: "hold", 7: "retract", 8: "drag", 9: "twist"}
 
 # events 列定义: (名字, dtype, 说明)
 EVENT_COLS = [
@@ -43,13 +44,18 @@ EVENT_COLS = [
     ("t_touchoff", "f8"), ("t_press", "f8"),
     ("t_hold_start", "f8"), ("t_hold_end", "f8"), ("t_retract", "f8"),
     ("fz_touchoff_N", "f4"), ("fz_hold_mean_N", "f4"), ("fz_peak_N", "f4"),
+    # 剪切/扭转批扩展（法向批为 NaN，老文件无这些列 → build_dataset 容错读取）
+    ("x_hold_meas_mm", "f4"), ("y_hold_meas_mm", "f4"),
+    ("drag_dx_cmd_mm", "f4"), ("drag_dy_cmd_mm", "f4"),
+    ("twist_cmd_deg", "f4"), ("twist_meas_deg", "f4"),
+    ("fx_hold_mean_N", "f4"), ("fy_hold_mean_N", "f4"), ("mz_hold_mean_N", "f4"),
     ("status", "i1"),
 ]
 
 # 状态码
-ST_OK, ST_ABORT_FORCE, ST_ABORT_WS, ST_SKIPPED, ST_SKIN_STALE = range(1, 6)
+ST_OK, ST_ABORT_FORCE, ST_ABORT_WS, ST_SKIPPED, ST_SKIN_STALE, ST_ABORT_SHEAR = range(1, 7)
 STATUS_NAMES = {1: "ok", 2: "abort_force", 3: "abort_workspace",
-                4: "skipped", 5: "skin_stale"}
+                4: "skipped", 5: "skin_stale", 6: "abort_shear"}
 
 _CHUNK = 4096
 

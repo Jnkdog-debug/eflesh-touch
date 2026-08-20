@@ -23,6 +23,9 @@ class PressTarget:
     gy_mm: float
     depth_mm: float
     batch: str
+    drag_dx_mm: float = 0.0   # 侧拖位移（剪切批），0 = 法向批
+    drag_dy_mm: float = 0.0
+    twist_deg: float = 0.0    # 绕探针轴扭转角（扭转批），带符号，0 = 不扭
 
     def label_xy(self) -> tuple[float, float]:
         return self.gx_mm, self.gy_mm
@@ -49,15 +52,42 @@ def make_grid(pitch_mm: float = GRID_PITCH_MM, half_mm: float = GRID_HALF_MM,
 
 
 def press_plan(grid=None, depths_mm=(0.5, 1.0, 1.5), batch: str = "b1",
-               order: str = "random", seed: int = 0) -> list[PressTarget]:
-    """网格 × 深度 → 按压计划。order: random | serpentine."""
+               order: str = "random", seed: int = 0, protocol: str = "normal",
+               drag_mm: float = None, twist_deg: float = None) -> list[PressTarget]:
+    """
+    网格 × 深度 → 按压计划。order: random | serpentine。
+
+    protocol:
+      normal  法向批（默认，历史行为不变）
+      drag    剪切批: 每点每深度 × 4 个拖动方向(±x,±y)，定深平移 drag_mm
+      twist   扭转批: 每点每深度 × 2 个旋向(±)，绕探针轴转到 twist_deg
+    """
+    from .config import DRAG_MM_DEFAULT, TWIST_DEG_DEFAULT
+    drag_mm = DRAG_MM_DEFAULT if drag_mm is None else drag_mm
+    twist_deg = TWIST_DEG_DEFAULT if twist_deg is None else twist_deg
+
     if grid is None:
         grid = make_grid()
     targets = []
     for (ix, iy, gx, gy) in grid:
         for d in depths_mm:
-            pid = f"{ix:+03d}{iy:+03d}_d{d:.1f}"
-            targets.append(PressTarget(pid, ix, iy, gx, gy, float(d), batch))
+            d = float(d)
+            if protocol == "normal":
+                pid = f"{ix:+03d}{iy:+03d}_d{d:.1f}"
+                targets.append(PressTarget(pid, ix, iy, gx, gy, d, batch))
+            elif protocol == "drag":
+                for ux, uy, tag in ((1, 0, "+x"), (-1, 0, "-x"), (0, 1, "+y"), (0, -1, "-y")):
+                    pid = f"{ix:+03d}{iy:+03d}_d{d:.1f}_g{tag}"
+                    targets.append(PressTarget(pid, ix, iy, gx, gy, d, batch,
+                                               drag_dx_mm=ux * drag_mm,
+                                               drag_dy_mm=uy * drag_mm))
+            elif protocol == "twist":
+                for s, tag in ((1, "cw"), (-1, "ccw")):
+                    pid = f"{ix:+03d}{iy:+03d}_d{d:.1f}_t{tag}"
+                    targets.append(PressTarget(pid, ix, iy, gx, gy, d, batch,
+                                               twist_deg=s * twist_deg))
+            else:
+                raise ValueError(f"unknown protocol: {protocol}")
 
     if order == "random":
         rng = random.Random(seed)

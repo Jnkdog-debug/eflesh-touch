@@ -1,14 +1,18 @@
 """
 单次按压状态机（v2 顺序版 —— 所有 SDK 调用都在主线程，同 go_home 用法）:
 
-  APPROACH → TARE → DESCEND(粗1mm+精0.25mm, touch-off) → PRESS → HOLD(0.8s) → RETRACT
+  APPROACH → TARE → DESCEND(粗1mm+精0.25mm, touch-off) → PRESS
+      法向批:  → HOLD(0.8s) → RETRACT
+      剪切批:  → DRAG(定深侧拖) → HOLD@偏移点 → RETRACT
+      扭转批:  → TWIST(绕探针轴±角) → HOLD@最大角 → RETRACT
 
 要点:
   - 阻塞 move_pose(block=1)，无并发轮询（并发会卡死 SDK 共享 TCP，实测教训）
-  - HOLD 窗口主线程直读 FT(~80Hz)+位姿(~10Hz)，自动入 HDF5
-  - 每压各自 touch-off 定 z0；位置标签用实测投影
+  - HOLD 窗口主线程直读 FT(~80Hz)+位姿(~10Hz)，自动入 HDF5（6 维 wrench 全收）
+  - 每压各自 touch-off 定 z0；位置标签用实测投影（剪切批用拖动终点投影）
   - 粗下探用上一次 z_zero 估计，只留 1mm 精探段（提速）
-  - 力限幅/工作空间检查内联在每步之间
+  - 力限幅/工作空间检查内联在每步之间；DRAG/TWIST 段加切向限幅 |Fx|,|Fy|,|Mz|
+  - RETRACT 两段式: 先在当前 xy 原地抬到悬停（防拖动/扭转后斜穿皮肤），再平移
 """
 
 import time
@@ -17,8 +21,9 @@ import numpy as np
 
 from . import config
 from .calib_frame import SkinFrame
-from .recorder import (PH_APPROACH, PH_DESCEND, PH_HOLD, PH_PRESS, PH_RETRACT,
-                       PH_TARE, PH_TOUCHOFF, ST_ABORT_FORCE, ST_ABORT_WS,
+from .recorder import (PH_APPROACH, PH_DESCEND, PH_DRAG, PH_HOLD, PH_PRESS,
+                       PH_RETRACT, PH_TARE, PH_TOUCHOFF, PH_TWIST,
+                       ST_ABORT_FORCE, ST_ABORT_SHEAR, ST_ABORT_WS,
                        ST_OK, ST_SKIN_STALE)
 from .traj import PressTarget, waypoints
 
@@ -35,6 +40,13 @@ class PressMachine:
         p = self.sf.skin_to_base(gx_mm, gy_mm, z_skin_mm)
         return [float(p[0]), float(p[1]), float(p[2])] + list(self.sf.rpy_probe)
 
+    def _twist_pose(self, gx_mm, gy_mm, z_skin_mm, deg):
+        """绕探针轴转 deg 度。SDK rpy 为 intrinsic xyz → tool-z 是末轴，rz 直接加；
+        探针轴过 TCP（尖点），旋转时尖端不动 = 纯扭转。"""
+        p = self._pose_at(gx_mm, gy_mm, z_skin_mm)
+        p[5] = float(p[5] + np.radians(deg))
+        return p
+
     def _fz(self):
         return self.s.read_fz()
 
@@ -44,6 +56,20 @@ class PressMachine:
             return False
         if abs(fz) > config.ABORT_FZ_N:
             print(f"[SAFETY] |Fz|={fz:.1f}N > {config.ABORT_FZ_N}N → 中止")
+            return True
+        return False
+
+    def _shear_abort(self, w6) -> bool:
+        """切向限幅（DRAG/TWIST 步进与保压中调用）。w6=[Fx,Fy,Fz,Mx,My,Mz]。"""
+        if w6 is None or len(w6) < 6:
+            return False
+        fx, fy, mz = abs(float(w6[0])), abs(float(w6[1])), abs(float(w6[5]))
+        if fx > config.ABORT_F_SHEAR_N or fy > config.ABORT_F_SHEAR_N:
+            print(f"[SAFETY] 剪切 |Fx|,|Fy|=({fx:.1f},{fy:.1f})N "
+                  f"> {config.ABORT_F_SHEAR_N}N → 中止")
+            return True
+        if mz > config.ABORT_MZ_N:
+            print(f"[SAFETY] |Mz|={mz:.2f}N·m > {config.ABORT_MZ_N} → 中止")
             return True
         return False
 
@@ -174,24 +200,86 @@ class PressMachine:
             pr = s.read_pose()
             z_cur = float(self.sf.base_to_skin(pr[1])[2]) if pr else z_cur - config.STEP_MM
 
+        # ---------- DRAG: 剪切批 —— 定深侧拖（悬空演练跳过） ----------
+        if air_gap_mm is None and (abs(target.drag_dx_mm) > 1e-9
+                                   or abs(target.drag_dy_mm) > 1e-9):
+            self._phase(press_idx, PH_DRAG)
+            pr = s.read_pose()
+            if pr is not None:
+                x0d, y0d, z0d = self.sf.base_to_skin(pr[1])
+            else:
+                x0d, y0d, z0d = target.gx_mm, target.gy_mm, z_target
+            dx, dy = target.drag_dx_mm, target.drag_dy_mm
+            dist = float(np.hypot(dx, dy))
+            n_step = max(1, int(round(dist / config.DRAG_STEP_MM)))
+            for k in range(1, n_step + 1):
+                if s.abort_event.is_set():
+                    self._retract(wp)
+                    return ST_ABORT_FORCE
+                r = s.read_ft()
+                if r is not None and r[2] == 0 and self._shear_abort(r[1]):
+                    s.abort_event.set()
+                    self._retract(wp)
+                    return ST_ABORT_SHEAR
+                s.move_pose(self._pose_at(x0d + dx * k / n_step,
+                                          y0d + dy * k / n_step, z0d),
+                            speed=config.SPEED_PRESS)
+            r = s.read_ft()
+            ok = r is not None and r[2] == 0
+            print(f"    [drag] →({x0d + dx:+.1f},{y0d + dy:+.1f})mm  "
+                  f"Fx={float(r[1][0]) if ok else float('nan'):+.2f}N "
+                  f"Fy={float(r[1][1]) if ok else float('nan'):+.2f}N")
+
+        # ---------- TWIST: 扭转批 —— 绕探针轴旋转（悬空演练跳过） ----------
+        if air_gap_mm is None and abs(target.twist_deg) > 1e-9:
+            self._phase(press_idx, PH_TWIST)
+            pr = s.read_pose()
+            if pr is not None:
+                x0t, y0t, z0t = self.sf.base_to_skin(pr[1])
+            else:
+                x0t, y0t, z0t = target.gx_mm, target.gy_mm, z_target
+            sgn = 1.0 if target.twist_deg > 0 else -1.0
+            total = abs(target.twist_deg)
+            n_t = max(1, int(round(total / config.TWIST_STEP_DEG)))
+            for k in range(1, n_t + 1):
+                if s.abort_event.is_set():
+                    self._retract(wp)
+                    return ST_ABORT_FORCE
+                r = s.read_ft()
+                if r is not None and r[2] == 0 and self._shear_abort(r[1]):
+                    s.abort_event.set()
+                    self._retract(wp)
+                    return ST_ABORT_SHEAR
+                s.move_pose(self._twist_pose(x0t, y0t, z0t,
+                                             sgn * total * k / n_t),
+                            speed=config.SPEED_PRESS)
+            r = s.read_ft()
+            mz_t = float(r[1][5]) if (r is not None and r[2] == 0) else float("nan")
+            print(f"    [twist] →{target.twist_deg:+.0f}°  Mz={mz_t:+.3f}N·m")
+
         # ---------- HOLD: 主线程直读 FT(~80Hz) + 位姿(~10Hz)，自动入 HDF5 ----------
         self._phase(press_idx, PH_HOLD)
         t_hold_start = s.clock.now_ns()
-        fz_samples = []
+        w_samples = []          # 6 维 wrench 全收（Fx..Mz 均值进 events）
         stale = False
         next_pose = t_hold_start
         while s.clock.now_ns() - t_hold_start < config.HOLD_S * 1e9:
             if s.abort_event.is_set():
                 self._retract(wp)
                 return ST_ABORT_FORCE
-            fz = self._fz()
-            if fz is not None:
-                fz_samples.append(fz)
-                if abs(fz) > config.ABORT_FZ_N:
-                    print(f"[SAFETY] hold |Fz|={fz:.1f}N → 中止")
+            r = s.read_ft()
+            if r is not None and r[2] == 0:
+                w6 = np.asarray(r[1], dtype=float)
+                w_samples.append(w6)
+                if abs(w6[2]) > config.ABORT_FZ_N:
+                    print(f"[SAFETY] hold |Fz|={w6[2]:.1f}N → 中止")
                     s.abort_event.set()
                     self._retract(wp)
                     return ST_ABORT_FORCE
+                if self._shear_abort(w6):
+                    s.abort_event.set()
+                    self._retract(wp)
+                    return ST_ABORT_SHEAR
             if s.clock.now_ns() >= next_pose:
                 s.read_pose()
                 next_pose += int(0.1e9)
@@ -200,16 +288,30 @@ class PressMachine:
             time.sleep(0.012)
         t_hold_end = s.clock.now_ns()
         pr = s.read_pose()
-        z_hold = float(self.sf.base_to_skin(pr[1])[2]) if pr else None
+        if pr is not None:
+            x_hold, y_hold, z_hold = (float(v) for v in self.sf.base_to_skin(pr[1]))
+            twist_meas = float(np.degrees(pr[2][2] - self.sf.rpy_probe[2]))
+        else:
+            x_hold = y_hold = z_hold = None
+            twist_meas = float("nan")
 
-        # ---------- RETRACT ----------
+        # ---------- RETRACT: 两段式（先原地抬起，再平移） ----------
         t_retract = s.clock.now_ns()
         self._phase(press_idx, PH_RETRACT)
+        pr = s.read_pose()
+        if pr is not None:
+            rx, ry, _ = self.sf.base_to_skin(pr[1])
+            s.move_pose(self._pose_at(rx, ry, config.HOVER_MM),
+                        speed=config.SPEED_DESCEND)
         s.move_pose(wp["above"], speed=config.SPEED_TRANSIT)
         time.sleep(config.SETTLE_S)
 
-        fz_mean = float(np.nanmean(fz_samples)) if fz_samples else float("nan")
-        fz_peak = float(np.nanmax(np.abs(fz_samples))) if fz_samples else float("nan")
+        W = np.asarray(w_samples, dtype=float) if w_samples else None
+        fz_mean = float(W[:, 2].mean()) if W is not None else float("nan")
+        fz_peak = float(np.abs(W[:, 2]).max()) if W is not None else float("nan")
+        fx_mean = float(W[:, 0].mean()) if W is not None else float("nan")
+        fy_mean = float(W[:, 1].mean()) if W is not None else float("nan")
+        mz_mean = float(W[:, 5].mean()) if W is not None else float("nan")
         c = s.clock
 
         s.rec.log_press({
@@ -227,13 +329,25 @@ class PressMachine:
             "t_hold_start": c.to_rel(t_hold_start), "t_hold_end": c.to_rel(t_hold_end),
             "t_retract": c.to_rel(t_retract),
             "fz_touchoff_N": fz_touchoff, "fz_hold_mean_N": fz_mean, "fz_peak_N": fz_peak,
+            "x_hold_meas_mm": x_hold if x_hold is not None else float("nan"),
+            "y_hold_meas_mm": y_hold if y_hold is not None else float("nan"),
+            "drag_dx_cmd_mm": target.drag_dx_mm, "drag_dy_cmd_mm": target.drag_dy_mm,
+            "twist_cmd_deg": target.twist_deg, "twist_meas_deg": twist_meas,
+            "fx_hold_mean_N": fx_mean, "fy_hold_mean_N": fy_mean, "mz_hold_mean_N": mz_mean,
             "status": ST_SKIN_STALE if stale else ST_OK,
         })
         return ST_SKIN_STALE if stale else ST_OK
 
     # ------------------------------------------------------------------
     def _retract(self, wp: dict):
+        """中止路径也走两段: 先在当前 xy 原地抬到悬停，再平移去 above。
+        （拖动/扭转后探针不在网格点正上方，直接连线会斜穿皮肤）"""
         try:
+            pr = self.s.read_pose()
+            if pr is not None:
+                rx, ry, _ = self.sf.base_to_skin(pr[1])
+                self.s.move_pose(self._pose_at(rx, ry, config.HOVER_MM),
+                                 speed=config.SPEED_DESCEND)
             self.s.move_pose(wp["above"], speed=config.SPEED_TRANSIT)
         except Exception as e:
             print(f"[press] retract 失败: {e}")

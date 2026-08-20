@@ -43,6 +43,11 @@ def build(paths: list[str], frame_mode: bool = False, full_force: bool = False):
                 "press_id", "batch", "ix", "iy", "status",
                 "x_meas_mm", "y_meas_mm", "z_hold_meas_mm",
                 "t_above", "t_descend", "t_hold_start", "t_hold_end")}
+            # 剪切/扭转批新增列（老文件没有 → NaN 填充，位置标签退回 touch-off 投影）
+            for k in ("x_hold_meas_mm", "y_hold_meas_mm",
+                      "drag_dx_cmd_mm", "drag_dy_cmd_mm", "twist_cmd_deg"):
+                ev[k] = (h5[f"events/{k}"][:] if f"events/{k}" in h5
+                         else np.full(len(ev["status"]), np.nan, dtype="f4"))
             n = len(ev["status"])
             n_used = 0
             for i in range(n):
@@ -97,8 +102,12 @@ def build(paths: list[str], frame_mode: bool = False, full_force: bool = False):
 
 
 def _labels(ev, i, wrench, full_force: bool):
-    lab = [float(ev["x_meas_mm"][i]), float(ev["y_meas_mm"][i]),
-           float(ev["z_hold_meas_mm"][i]), float(wrench[2])]
+    """位置标签: 剪切/扭转批优先用 hold 末端实测投影（拖动终点/扭转时接触点），
+    法向批/老文件无此字段 → touch-off 实测投影（历史行为不变）。"""
+    xh, yh = ev["x_hold_meas_mm"][i], ev["y_hold_meas_mm"][i]
+    x = float(xh) if np.isfinite(xh) else float(ev["x_meas_mm"][i])
+    y = float(yh) if np.isfinite(yh) else float(ev["y_meas_mm"][i])
+    lab = [x, y, float(ev["z_hold_meas_mm"][i]), float(wrench[2])]
     if full_force:
         lab += [float(v) for v in wrench]
     return np.array(lab, dtype=np.float32)

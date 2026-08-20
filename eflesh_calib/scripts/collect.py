@@ -59,6 +59,12 @@ def main():
     ap.add_argument("--air-gap", type=float, default=None, help=">0 = 空中演练模式")
     ap.add_argument("--arm", default=config.ARM_IP)
     ap.add_argument("--limit", type=int, default=None, help="最多压 N 次（调试）")
+    ap.add_argument("--protocol", default="normal", choices=["normal", "drag", "twist"],
+                    help="normal=法向批; drag=定深侧拖(剪切); twist=绕探针轴旋转(扭转)")
+    ap.add_argument("--drag-mm", type=float, default=config.DRAG_MM_DEFAULT,
+                    help="drag 批侧拖距离（默认 %(default)s）")
+    ap.add_argument("--twist-deg", type=float, default=config.TWIST_DEG_DEFAULT,
+                    help="twist 批扭转角绝对值（默认 %(default)s）")
     args = ap.parse_args()
 
     sf = SkinFrame.load(args.calib)
@@ -73,7 +79,19 @@ def main():
     grid = make_grid(pitch_mm=args.pitch, half_mm=half, subset_n=args.grid)
     plan = press_plan(grid=grid, depths_mm=depths,
                       batch=args.batch or args.session,
-                      order=args.order, seed=args.seed)
+                      order=args.order, seed=args.seed,
+                      protocol=args.protocol, drag_mm=args.drag_mm,
+                      twist_deg=args.twist_deg)
+
+    if args.protocol == "drag":     # 剔除"边缘点向外拖"出皮肤的目标
+        half_x_abs = float(sf.meta.get("half_x_mm", config.GRID_HALF_MM))
+        half_y_abs = float(sf.meta.get("half_y_mm", config.GRID_HALF_MM))
+        before = len(plan)
+        plan = [t for t in plan
+                if abs(t.gx_mm + t.drag_dx_mm) <= half_x_abs - 0.5
+                and abs(t.gy_mm + t.drag_dy_mm) <= half_y_abs - 0.5]
+        print(f"[drag] 剔除拖出皮肤范围的目标 {before - len(plan)}/{before}"
+              f"（边缘点朝外侧的方向）")
 
     if args.resume:
         done = collect_done_ids(config.DATA_DIR, args.session)
@@ -93,6 +111,7 @@ def main():
         "order": args.order, "thr_touch_N": thr,
         "hold_s": config.HOLD_S, "air_gap_mm": args.air_gap if args.air_gap else 0.0,
         "abort_fz_N": config.ABORT_FZ_N, "abort_f_any_N": config.ABORT_F_ANY_N,
+        "protocol": args.protocol, "drag_mm": args.drag_mm, "twist_deg": args.twist_deg,
     }
 
     print(f"网格范围 ±{half:.1f}mm (示教半幅 x±{half_x:.1f} y±{half_y:.1f}, 内缩 {args.margin_mm}mm)")
