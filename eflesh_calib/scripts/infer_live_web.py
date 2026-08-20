@@ -79,9 +79,14 @@ function draw(s){
  for(let g=0;g<=4;g++){const p=g*PX/4;
   ctx.beginPath();ctx.moveTo(p,0);ctx.lineTo(p,PX);ctx.stroke();
   ctx.beginPath();ctx.moveTo(0,p);ctx.lineTo(PX,p);ctx.stroke();}
+ // 传感器标记: 实测定案(拔线+batch002 响应场验证, docs/2026-08-20-hardware-layout.md)
+ // S1右下 S2左下 S3右上 S4左上(磁体反装) S5中心; 坐标为设计近似±12mm
+ const SENS=[[12,-12,'S1'],[-12,-12,'S2'],[12,12,'S3'],[-12,12,'S4'],[0,0,'S5']];
  ctx.fillStyle='rgba(255,255,255,.35)';
- [[0,12],[-12,0],[0,-12],[12,0],[0,0]].forEach(p=>{   // S1-S4 十字 + S5 中心
-  ctx.beginPath();ctx.arc((p[0]+20)*mm2px,(20-p[1])*mm2px,2.5,0,7);ctx.fill();});
+ SENS.forEach(p=>{ctx.beginPath();
+  ctx.arc((p[0]+20)*mm2px,(20-p[1])*mm2px,2.5,0,7);ctx.fill();});
+ ctx.fillStyle='rgba(255,255,255,.55)';ctx.font='9px monospace';
+ SENS.forEach(p=>{ctx.fillText(p[2],(p[0]+20)*mm2px+4,(20-p[1])*mm2px-4);});
  // 接触标记
  if(s.contact){
   ctx.strokeStyle='#fff';ctx.lineWidth=1.5;
@@ -145,6 +150,14 @@ def main():
     ap.add_argument("--http", type=int, default=8899)
     ap.add_argument("--init-s", type=float, default=3.0)
     args = ap.parse_args()
+
+    if not Path(args.port).exists():               # 串口重插可能变 ttyUSB1, 同 runtime.py 回退
+        import glob
+        alts = sorted(glob.glob("/dev/ttyUSB*") + glob.glob("/dev/ttyACM*"))
+        if not alts:
+            raise SystemExit(f"串口 {args.port} 不存在, 也没找到其他 /dev/ttyUSB*")
+        print(f"{args.port} 不存在, 改用 {alts[0]}")
+        args.port = alts[0]
 
     model, x_mean, x_std, y_mean, y_std = load_model(args.artifact)
     import torch
