@@ -2,8 +2,8 @@
 """
 实时接触热力图（web 版）—— 浏览器打开 http://<orin-ip>:8899
 
-后端(Orin): 皮肤帧 → ΔB(在线基线) → MLP → (x,y,z,Fz)，JSON 输出
-前端(浏览器): canvas 热力图 —— 接触点高斯辉斑 + 衰减余晖（类论文实时可视化）
+后端(Orin): 皮肤帧 → ΔB(在线基线) → MLP → (x,y,z,Fz, Fx,Fy 剪切)，JSON 输出
+前端(浏览器): canvas 热力图 —— 接触点高斯辉斑 + 衰减余晖 + 剪切箭头（青色, 指向推的方向）
 
 Usage:
   python scripts/infer_live_web.py --artifact data/ds_v1f_mlp.pt [--http 8899]
@@ -29,8 +29,8 @@ from eflesh_calib.skin_stream import SkinStats, skin_reader
 from eflesh_calib.util import Latest
 from infer_live import load_model
 
-STATE = {"x": 0.0, "y": 0.0, "z": 0.0, "fz": 0.0, "mag": 0.0,
-         "hz": 0.0, "contact": False, "t": 0.0}
+STATE = {"x": 0.0, "y": 0.0, "z": 0.0, "fz": 0.0, "fx": 0.0, "fy": 0.0,
+         "mag": 0.0, "hz": 0.0, "contact": False, "t": 0.0}
 LOCK = threading.Lock()
 
 PAGE = """<!DOCTYPE html><html><head><meta charset="utf-8">
@@ -94,9 +94,24 @@ function draw(s){
   ctx.beginPath();ctx.arc(px,py,8,0,7);ctx.stroke();
   ctx.beginPath();ctx.moveTo(px-12,py);ctx.lineTo(px+12,py);
   ctx.moveTo(px,py-12);ctx.lineTo(px,py+12);ctx.stroke();
+  // 剪切箭头: 方向=(Fx,Fy)皮肤系, 长度∝|F|, 屏幕y向下取反
+  const fmag=Math.hypot(s.fx,s.fy);
+  if(fmag>0.08){
+   const L=Math.min(34, 18+30*fmag/0.7), a=Math.atan2(-s.fy,s.fx);
+   const tx=px+L*Math.cos(a), ty=py+L*Math.sin(a);
+   ctx.strokeStyle='#4fe';ctx.lineWidth=2.5;
+   ctx.beginPath();ctx.moveTo(px,py);ctx.lineTo(tx,ty);ctx.stroke();
+   ctx.beginPath();ctx.moveTo(tx,ty);          // 箭头翼
+   ctx.lineTo(tx-7*Math.cos(a-0.45),ty-7*Math.sin(a-0.45));
+   ctx.moveTo(tx,ty);
+   ctx.lineTo(tx-7*Math.cos(a+0.45),ty-7*Math.sin(a+0.45));
+   ctx.stroke();
+   ctx.fillStyle='#4fe';ctx.font='11px monospace';
+   ctx.fillText(`⇶ ${fmag.toFixed(2)}N`,tx+4,ty-4);
+  }
  }
  const nums=s.contact?
-  `  x=${s.x.toFixed(2)}mm  y=${s.y.toFixed(2)}mm  z=${s.z.toFixed(2)}mm  Fz=${s.fz.toFixed(2)}N`
+  `  x=${s.x.toFixed(2)}mm  y=${s.y.toFixed(2)}mm  z=${s.z.toFixed(2)}mm  Fz=${s.fz.toFixed(2)}N  Fx=${s.fx.toFixed(2)} Fy=${s.fy.toFixed(2)}N`
   :'  — 未接触，预测值在训练分布外，已屏蔽 —';
  document.getElementById('read').textContent =
   (s.contact?'● 接触  ':'○ 无接触')+nums+
@@ -220,6 +235,8 @@ def main():
             with LOCK:
                 STATE.update(x=float(y[0]), y=float(y[1]), z=float(y[2]),
                              fz=float(y[3]) if len(y) > 3 else 0.0,
+                             fx=float(y[4]) if len(y) > 5 else 0.0,   # 9/10 列标签第5,6位=Fx,Fy
+                             fy=float(y[5]) if len(y) > 5 else 0.0,
                              mag=mag, hz=stats.hz(), contact=bool(contact), t=now)
             time.sleep(0.002)
     except KeyboardInterrupt:
