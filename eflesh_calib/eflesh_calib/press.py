@@ -289,7 +289,9 @@ class PressMachine:
         pr = s.read_pose()
         if pr is not None:
             x_hold, y_hold, z_hold = (float(v) for v in self.sf.base_to_skin(pr[1]))
-            twist_meas = float(np.degrees(pr[2][2] - self.sf.rpy_probe[2]))
+            dz = pr[2][2] - self.sf.rpy_probe[2]          # SDK rpy 回绕在 ±π, 差值先归一到 (−π,π]
+            dz = (dz + np.pi) % (2 * np.pi) - np.pi
+            twist_meas = float(np.degrees(dz))
         else:
             x_hold = y_hold = z_hold = None
             twist_meas = float("nan")
