@@ -137,8 +137,15 @@ def main():
           f"{'PASS' if geo['center_dev_mm'] < 1.0 else 'WARN (>1mm)'}")
     print(f"rpy_probe: {[f'{v:.4f}' for v in sf.rpy_probe]}")
 
+    if sf.residual_mm >= 0.5 or geo["side_spread_mm"] >= 1.0:
+        print("\n!! 验收未过（平面RMS≥0.5 或 边长极差≥1mm），不保存。"
+              "重新运行，注意：每个角先按 p 看 Fz≈-0.2N 确认真轻触再按 m。")
+        arm.disconnect()
+        return
+
     out = Path(args.out) if args.out else (
         config.DATA_DIR / f"skin_frame_{__import__('time').strftime('%Y%m%d_%H%M%S')}.json")
+    out.parent.mkdir(parents=True, exist_ok=True)
     sf.save(out)
     print(f"\n已保存: {out}")
     arm.disconnect()
