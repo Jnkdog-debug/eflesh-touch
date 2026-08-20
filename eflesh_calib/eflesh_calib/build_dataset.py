@@ -25,7 +25,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import h5py
 import numpy as np
 
+from eflesh_calib import config
 from eflesh_calib.util import interp_to
+
+_R = np.array(config.FT_R_TO_SKIN, dtype=float)
+_T = np.array(config.FT_LEVER_SENSOR_M, dtype=float)
+
+
+def wrench_to_skin(w):
+    """传感器系(tared) 6 维力 → 皮肤系接触点 6 维力。
+    力: F_sk = R·F_s（R 经 4 方向拖动 + 法向下压验证）；
+    力矩: 先扣杆臂 M_contact = M_s − t×F_s，再 R 映射。
+    竖直杆臂不污染 Mz；t 的横向分量对 Mz 的影响已含在 t×F 内。"""
+    w = np.asarray(w, dtype=float)
+    F = _R @ w[:3]
+    M = _R @ (w[3:] - np.cross(_T, w[:3]))
+    return np.concatenate([F, M])
 
 
 def build(paths: list[str], frame_mode: bool = False, full_force: bool = False):
@@ -109,7 +124,7 @@ def _labels(ev, i, wrench, full_force: bool):
     y = float(yh) if np.isfinite(yh) else float(ev["y_meas_mm"][i])
     lab = [x, y, float(ev["z_hold_meas_mm"][i]), float(wrench[2])]
     if full_force:
-        lab += [float(v) for v in wrench]
+        lab += [float(v) for v in wrench_to_skin(wrench)]
     return np.array(lab, dtype=np.float32)
 
 
@@ -125,6 +140,8 @@ def main():
     if not paths:
         sys.exit(f"无匹配文件: {args.h5}")
     ds = build(paths, frame_mode=args.frames, full_force=args.full_force)
+    if args.full_force:
+        print("6 维力已变换到皮肤系接触点 (R + 杆臂 t, 见 config.FT_R_TO_SKIN)")
 
     np.savez_compressed(args.out, **ds)
     n = len(ds["X"])

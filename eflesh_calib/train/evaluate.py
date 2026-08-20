@@ -19,7 +19,7 @@ import torch
 from train.models import MLP, RidgeMultiOutput
 from train.train_model import TARGET_NAMES, split_data
 
-UNITS = ["mm", "mm", "mm", "N", "N", "N", "N·m", "N·m", "N·m"]
+UNITS = ["mm", "mm", "mm", "N", "N", "N", "N·m", "N·m", "N·m"]   # 兼容旧引用; 表内单位现随 names 推导
 # 验收线（采集计划笔记）: x,y ≤ 0.5mm, z ≤ 0.16mm, 力 <5% 量程（按数据实际范围算）
 TARGETS = {"x_mm": 0.5, "y_mm": 0.5, "z_mm": 0.16}
 
@@ -54,14 +54,16 @@ def main():
         assert args.artifact, "mlp 需要 --artifact"
         pred = predict_mlp(args.artifact, Xva)
 
-    names = TARGET_NAMES + [n for n in ("Fx", "Fy", "Mx", "My", "Mz")][:max(0, yva.shape[1] - 4)]
+    extra = [n for n in ("Fx", "Fy", "Fz", "Mx", "My", "Mz")][:max(0, yva.shape[1] - 4)]
+    names = TARGET_NAMES + extra
+    units = ["mm", "mm", "mm", "N"] + ["N·m" if n.startswith("M") else "N" for n in extra]
     err = pred - yva
 
     print("\n===== RMSE（验证集） =====")
     for c in range(yva.shape[1]):
         rmse = float(np.sqrt(np.mean(err[:, c] ** 2)))
         r2 = 1 - np.sum(err[:, c] ** 2) / max(np.sum((yva[:, c] - yva[:, c].mean()) ** 2), 1e-9)
-        line = f"  {names[c]:5s}: RMSE={rmse:8.4f} {UNITS[c]:3s}  R²={r2:.3f}"
+        line = f"  {names[c]:5s}: RMSE={rmse:8.4f} {units[c]:3s}  R²={r2:.3f}"
         if names[c] in TARGETS:
             line += f"   目标≤{TARGETS[names[c]]}  {'PASS' if rmse <= TARGETS[names[c]] else 'MISS'}"
         print(line)
