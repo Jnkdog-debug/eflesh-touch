@@ -2,6 +2,8 @@
 #include <Adafruit_MLX90393.h>
 
 // 定义 5 个传感器的 CS 引脚
+// 物理位置（2026-08-20 拔线定案，详见 ../docs/2026-08-20-hardware-layout.md）：
+//   S1=右下角  S2=左下角  S3=右上角  S4=左上角(头顶磁体反装S朝上,保留不拆)  S5=中心
 const int CS_PINS[5] = {5, 2, 4, 13, 12};
 
 // 创建 5 个传感器对象数组
@@ -37,9 +39,11 @@ void setup() {
       
       // 设置传感器的增益和分辨率 (可根据磁铁强度在后续微调)
       sensors[i].setGain(MLX90393_GAIN_1X);
-      sensors[i].setResolution(MLX90393_X, MLX90393_RES_16);
-      sensors[i].setResolution(MLX90393_Y, MLX90393_RES_16);
-      sensors[i].setResolution(MLX90393_Z, MLX90393_RES_16);
+      // 【量程修复 2026-08-20】RES_16 满量程 XY ±4.9mT / Z ±7.9mT，静态场+按压会溢出翻转。
+      // 与 eflash_binary.ino 保持一致：RES_19 → XY ±39mT / Z ±63mT，量化远低于噪声。详见该文件注释。
+      sensors[i].setResolution(MLX90393_X, MLX90393_RES_19);
+      sensors[i].setResolution(MLX90393_Y, MLX90393_RES_19);
+      sensors[i].setResolution(MLX90393_Z, MLX90393_RES_19);
       // 设置数字滤波，降低噪声
       sensors[i].setFilter(MLX90393_FILTER_5);
     } else {

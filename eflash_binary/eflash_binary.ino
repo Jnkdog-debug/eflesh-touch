@@ -31,6 +31,8 @@
 #define NUM_SENSORS 5
 
 // 【修复2】与 eflesh.ino 相同的 CS 顺序 —— S1..S5 依次是 5, 2, 4, 13, 12
+// 物理位置（2026-08-20 拔线定案，详见 docs/2026-08-20-hardware-layout.md）：
+//   S1=右下角  S2=左下角  S3=右上角  S4=左上角(头顶磁体反装S朝上,保留不拆)  S5=中心
 const int CS_PINS[NUM_SENSORS] = {5, 2, 4, 13, 12};
 
 // 【修复1】CP2102 的上限是 921600。
@@ -76,9 +78,13 @@ void setup() {
     }
     if (sensor_ok[i]) {
       sensors[i].setGain(MLX90393_GAIN_1X);
-      sensors[i].setResolution(MLX90393_X, MLX90393_RES_16);
-      sensors[i].setResolution(MLX90393_Y, MLX90393_RES_16);
-      sensors[i].setResolution(MLX90393_Z, MLX90393_RES_16);
+      // 【量程修复 2026-08-20】RES_16 时 XY 满量程 ±4.92mT(0.150µT/LSB)、Z ±7.93mT(0.242µT/LSB)。
+      // 静态场就有 z≈8.1mT 顶轨，按压必溢出：S1z 实测被钉在 ±7930µT 来回翻，
+      // 表观 ΔB 恒 ≈15.86mT(=2^16×0.242µT)；手指深压时 XY 也超 ±4.92mT 同样翻转。
+      // RES_19: XY ±39.4mT / Z ±63.4mT，量化 1.2/1.9µT << 噪声(~10-25µT)，SNR 无损。
+      sensors[i].setResolution(MLX90393_X, MLX90393_RES_19);
+      sensors[i].setResolution(MLX90393_Y, MLX90393_RES_19);
+      sensors[i].setResolution(MLX90393_Z, MLX90393_RES_19);
       // FILTER_3：噪声比 FILTER_5 略高，但转换时间从 7.2ms 降到 2.6ms
       sensors[i].setFilter(MLX90393_FILTER_3);
       // 【修复4，关键！】库的 _init() 默认把 OSR 设成最慢的 OSR_3（tconv=16.05ms），
