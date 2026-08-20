@@ -124,7 +124,8 @@ def _labels(ev, i, wrench, full_force: bool):
     y = float(yh) if np.isfinite(yh) else float(ev["y_meas_mm"][i])
     lab = [x, y, float(ev["z_hold_meas_mm"][i]), float(wrench[2])]
     if full_force:
-        lab += [float(v) for v in wrench_to_skin(wrench)]
+        w_sk = wrench_to_skin(wrench)
+        lab += [float(v) for v in w_sk[[0, 1, 3, 4, 5]]]   # Fx,Fy,Mx,My,Mz（Fz 已在第 4 列，去重）
     return np.array(lab, dtype=np.float32)
 
 
